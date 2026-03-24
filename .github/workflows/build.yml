@@ -1,0 +1,133 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "extras/**"
+      - "docs/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "extras/**"
+      - "docs/**"
+  workflow_call:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos-arm64
+            archive: PyeClaw-macOS-arm64.tar.gz
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            archive: PyeClaw-Linux-x86_64.tar.gz
+          - os: windows-latest
+            platform: windows-x86_64
+            archive: PyeClaw-Windows-x86_64.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libegl1
+
+      - name: Install Developer ID certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          keychain: ${{ github.run_id }}
+          keychain-password: ${{ secrets.KEYCHAIN_PWD }}
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller pyeclaw.spec --noconfirm --clean
+
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS' && env.SIGNING_IDENTITY != ''
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.NOTARIZATION_USERNAME }}
+          APPLE_ID_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
+        run: |
+          # sign all binaries, dylibs, and frameworks inside the bundle
+          find dist/PyeClaw.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) | while read f; do
+            codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp "$f" 2>/dev/null || true
+          done
+
+          find dist/PyeClaw.app -name "*.framework" -type d | while read f; do
+            codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp "$f" 2>/dev/null || true
+          done
+
+          # sign the main app bundle
+          codesign --force --verify --verbose \
+            --sign "$SIGNING_IDENTITY" \
+            --options runtime \
+            --entitlements entitlements.plist \
+            --timestamp \
+            dist/PyeClaw.app
+
+          codesign --verify --deep --strict --verbose=2 dist/PyeClaw.app
+
+          # notarize
+          ditto -c -k --keepParent dist/PyeClaw.app dist/PyeClaw-notarize.zip
+
+          xcrun notarytool submit dist/PyeClaw-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple dist/PyeClaw.app
+          rm dist/PyeClaw-notarize.zip
+
+      - name: Ad-hoc sign (macOS, no certificate)
+        if: runner.os == 'macOS' && env.SIGNING_IDENTITY == ''
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: codesign --deep --force --sign - dist/PyeClaw.app
+
+      - name: Create archive (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: cd dist && tar -czf ../${{ matrix.archive }} PyeClaw.app
+
+      - name: Create archive (Linux)
+        if: startsWith(matrix.platform, 'linux')
+        run: cd dist && tar -czf ../${{ matrix.archive }} PyeClaw
+
+      - name: Create archive (Windows)
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        run: Compress-Archive -Path dist/PyeClaw -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}
+          path: ${{ matrix.archive }}
