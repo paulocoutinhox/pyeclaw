@@ -1,0 +1,61 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.whl
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# build artifacts
+build/
+dist/
+*.spec.bak
+
+# pyinstaller
+*.manifest
+*.spec.tmp
+
+# ruff
+.ruff_cache/
+
+# ide
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macos
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# linux
+*~
+.directory
+
+# distribution
+*.tar.gz
+*.zip
+*.dmg
+*.pkg
+*.deb
+*.exe
+*.msi
+
+# environment
+.env
+.env.local
+
+# uv
+uv.lock
